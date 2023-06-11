@@ -1,0 +1,866 @@
+---
+title: "Emparejamiento para la conformación de un grupo control"
+output:
+  html_document:
+    df_print: paged
+---
+
+Importación de librerías necesarias:
+
+```{r}
+library(readxl)
+library(tidyverse)
+library(DataExplorer)
+library(tableone)
+library(MatchIt)
+library(readr)
+library(writexl)
+library(cobalt)
+library(Matching)
+```
+
+### Carga de los conjuntos de datos
+
+```{r}
+sujetos_interv_raw <- read_excel("~/Desktop/TFG/TFG-R dir/dataset_interv.xlsx") 
+```
+
+```{r}
+sujetos_ctrl_raw<- read_excel("~/Desktop/TFG/TFG-R dir/dataset_control.xlsx")
+```
+
+### EXPLORACIÓN INICIAL Y SELECCIÓN DE COLUMNAS
+
+#### Grupo intervención
+
+```{r}
+colnames(sujetos_interv_raw)
+```
+
+```{r}
+sujetos_interv_raw = subset(sujetos_interv_raw, select = c(id,fecha_subida, bcomun, edad, sexo, bhta, bacv, bangina, biam, bdiabe, bfuma, bpro_pa_bpro_pa_s, bpeso, btalla, bimc, hfe_re, hcolest)) #Selección de columnas útiles
+
+str(sujetos_interv_raw)
+
+```
+
+#### Grupo control
+
+```{r}
+colnames(sujetos_ctrl_raw)
+```
+
+```{r}
+sujetos_ctrl_raw = subset(sujetos_ctrl_raw, select = -DM1_T89) #Selección de columnas (se elimina la columna de DM1 (no se utiliza)) 
+
+str(sujetos_ctrl_raw)
+```
+
+### COMPROBACIONES PREVIAS Y PRIMERAS TRANSFORMACIONES
+
+```{r}
+table(sujetos_interv_raw$bcomun,useNA = 'ifany') #Comprobación. Todos los sujetos son de la comunidad 2 (Colombia)
+sujetos_interv_raw$pais_Colomb <- 1 #Creación de nueva columna pais_Colomb
+```
+
+```{r}
+unique(sujetos_interv_raw$bhta)
+#El conjunto de datos de control solo contiene datos de hipertensos no controlados (los hipertensos de novo del grupo intervención son eliminados)
+table(sujetos_interv_raw$bhta, useNA = 'ifany')
+sujetos_interv_raw<-sujetos_interv_raw[sujetos_interv_raw$bhta ==1, ]
+```
+
+### UNIFICACIÓN DE VARIABLES
+
+Exploración para detectar qué variables deben de ser procesadas previo emparejamiento.
+
+#### Grupo intervención
+
+```{r}
+unique(sujetos_interv_raw$sexo)
+unique(sujetos_interv_raw$bacv)
+unique(sujetos_interv_raw$bangina)
+unique(sujetos_interv_raw$biam)
+unique(sujetos_interv_raw$bdiabe)
+unique(sujetos_interv_raw$bfuma)
+```
+
+-   Transformación de variables de texto (chr) en variables numéricas
+
+```{r}
+sujetos_interv_raw$sexo_fem_as_num_interv<-as.numeric(sujetos_interv_raw$sexo=='Femenino') # 1 si cumple la condición (sexo femenino), 0 si no la cumple
+
+str(sujetos_interv_raw)
+```
+
+-   Transformación de la variable bfuma
+
+Atendiendo a la documentación de los cuadernos de recogida de datos y las equivalencias definidas previamente.
+
+Se transforma la variable bfuma en binaria: valores 1 y 2 son no fumadores (0), valores 3-7 son fumadores (1).
+
+```{r}
+table(sujetos_interv_raw$bfuma, useNA = 'ifany')
+```
+
+```{r}
+sujetos_interv_raw <- mutate(
+  sujetos_interv_raw, bfuma = case_when(
+    bfuma == 1 | bfuma == 2 ~ 0, 
+    TRUE   ~ 1 
+  ))
+table(sujetos_interv_raw$bfuma, useNA = 'ifany')
+```
+
+#### Grupo control
+
+-   Transformación de la variable SEXO y variables correspondientes a episodios
+
+```{r}
+sujetos_ctrl_raw$sexo_fem_as_num_ctrl<-as.numeric(sujetos_ctrl_raw$SEXO=='F')
+
+#Cambio de nombre de las columnas para facilitar el proceso de preparación de los datos
+## Las variables de episodio originales son realmente la fecha de apertura del episodio
+sujetos_ctrl_raw <-
+  rename(sujetos_ctrl_raw,
+    ID=CODIGO_PAC,
+    HTA_K86_FECHA = HTA_K86,
+    HTA_COM_K87_FECHA = HTA_COM_K87,
+    DM2_T90_FECHA=DM2_T90,
+    TABACO_DGP_FECHA=FECHA_TABACO,
+    PAS_FECHA=FECHA_PAS,
+    PESO_FECHA=FECHA_PESO,
+    TALLA_FECHA=FECHA_TALLA,
+    IMC_FECHA=FECHA_IMC,
+    COLESTEROL_FECHA=FECHA_COLESTEROL,
+    FUMADOR_P17_FECHA=FUMADOR_P17,
+    ACVA_K90_K91_FECHA=ACVA_K90_K91,
+    IAM_K75_K76_FECHA=IAM_K75_K76,
+    ANGINA_K74_FECHA=ANGINA_K74
+  )
+
+#Creación de columnas correspondientes a los episodios (episodio abierto o no)
+sujetos_ctrl_raw$HTA_K86 <- ifelse(is.na(sujetos_ctrl_raw$HTA_K86_FECHA), 0, 1)
+sujetos_ctrl_raw$HTA_COM_K87 <- ifelse(is.na(sujetos_ctrl_raw$HTA_COM_K87_FECHA), 0, 1)
+sujetos_ctrl_raw$DM2_T90 <- ifelse(is.na(sujetos_ctrl_raw$DM2_T90_FECHA), 0, 1)
+sujetos_ctrl_raw$FUMADOR_P17 <- ifelse(is.na(sujetos_ctrl_raw$FUMADOR_P17_FECHA), 0, 1)
+sujetos_ctrl_raw$ACVA_K90_K91 <- ifelse(is.na(sujetos_ctrl_raw$ACVA_K90_K91_FECHA), 0, 1)
+sujetos_ctrl_raw$IAM_K75_K76 <- ifelse(is.na(sujetos_ctrl_raw$IAM_K75_K76_FECHA), 0, 1)
+sujetos_ctrl_raw$ANGINA_K74 <- ifelse(is.na(sujetos_ctrl_raw$ANGINA_K74_FECHA), 0, 1)
+
+#Se crea la columna PAIS_COLOMB, indica si el país de nacimiento del sujeto es Colombia (o no)
+sujetos_ctrl_raw$PAIS_COLOMB <- ifelse(sujetos_ctrl_raw$PAIS=="COLOMBIA" & !is.na(sujetos_ctrl_raw$PAIS), 1, 0)
+
+```
+
+```{r}
+str(sujetos_ctrl_raw)
+
+```
+
+-   Transformación de la variable bfuma
+
+```{r}
+#Unificar la variable tabaco. Se determina como 1 si el paciente tiene el DGP de TABAQUISMO (TABACO_DGP) o un episodio de tabaquismo abierto (FUMADOR_P17)
+table(sujetos_ctrl_raw$TABACO_DGP, useNA = 'ifany')
+sujetos_ctrl_raw["TABACO_DGP"][is.na(sujetos_ctrl_raw["TABACO_DGP"])] <- 0 #Asumimos que si no está recogida el DGP 'fumador' para el paciente, es no fumador
+
+table(sujetos_ctrl_raw$FUMADOR_P17)
+
+sujetos_ctrl_raw$tabaquismo_ctrl<-ifelse(sujetos_ctrl_raw$TABACO_DGP==1|sujetos_ctrl_raw$FUMADOR_P17==1, 1, 0)
+
+table(sujetos_ctrl_raw$tabaquismo_ctrl)
+
+
+str(sujetos_ctrl_raw)
+```
+
+-   Transformaciones no necesarias para el emparejamiento pero útiles para al estudio principal
+
+```{r}
+#Unificar las variables de hipertensión previa HTA_K86 y HTA_COM_K87
+#La variable HTA previa se determina como 1 si el paciente tiene registrado un episodio de HTA_K86 o un episodio de HTA_COM_K87
+
+table(sujetos_ctrl_raw$HTA_K86)
+table(sujetos_ctrl_raw$HTA_COM_K87)
+
+sujetos_ctrl_raw$hta_previa_ctrl<-ifelse(sujetos_ctrl_raw$HTA_K86==1|sujetos_ctrl_raw$HTA_COM_K87==1, 1, 0)
+
+table(sujetos_ctrl_raw$hta_previa_ctrl)
+
+#Crear nueva variable FECHA_HTA (fecha del primer diagnóstico de HTA), la menor entre HTA_K86_FECHA y HTA_COM_K87_FECHA 
+vector_hta_fecha <- ifelse(!is.na(sujetos_ctrl_raw$HTA_K86_FECHA),ifelse(!is.na(sujetos_ctrl_raw$HTA_COM_K87_FECHA),ifelse(sujetos_ctrl_raw$HTA_K86_FECHA<sujetos_ctrl_raw$HTA_COM_K87_FECHA,sujetos_ctrl_raw$HTA_K86_FECHA,
+                  as.POSIXct(sujetos_ctrl_raw$HTA_COM_K87_FECHA)),
+                  as.POSIXct(sujetos_ctrl_raw$HTA_K86_FECHA)),
+                  as.POSIXct(sujetos_ctrl_raw$HTA_COM_K87_FECHA))
+class(vector_hta_fecha) <- c("POSIXct", "POSIXt")
+sujetos_ctrl_raw$HTA_FECHA <- format(as.POSIXct(vector_hta_fecha,format = '%Y%m%d %H:%M:%S'),format = '%Y-%m-%d')
+
+str(sujetos_ctrl_raw)
+
+```
+
+#### Creación de los datasets con las variables procesadas
+
+```{r}
+sujetos_interv_df = subset(sujetos_interv_raw, select = c(id,pais_Colomb, edad, sexo_fem_as_num_interv, bacv, bangina, biam, bdiabe, bfuma, bpro_pa_bpro_pa_s, bpeso, btalla, bimc, hcolest))
+
+summary(sujetos_interv_df)
+```
+
+```{r}
+sujetos_ctrl_df = subset(sujetos_ctrl_raw, select = c(ID, PAIS_COLOMB, EDAD, sexo_fem_as_num_ctrl, ACVA_K90_K91, ANGINA_K74, IAM_K75_K76, DM2_T90, tabaquismo_ctrl, PAS, PESO, TALLA, IMC, COLESTEROL))
+
+summary(sujetos_ctrl_df)
+```
+
+### UNIÓN DE LOS DATASETS
+
+```{r}
+#Añadimos los valores de tratamiento recibido
+sujetos_interv_df$INTERV <- 1
+sujetos_ctrl_df$INTERV <- 0
+
+str(sujetos_interv_df)
+str(sujetos_ctrl_df)
+```
+
+```{r}
+#Unión de los datasets del grupo control e intervención en un solo conjunto de datos
+
+df <- rbind(sujetos_ctrl_df,         
+                  setNames(sujetos_interv_df, names(sujetos_ctrl_df))) 
+
+#Al hacaer esta unión y equiparar las variables 'pais_Colomb' (país donde se realiza la intervención) y 'PAÍS' (país de nacimiento)se asume que el país de nacimiento de todos los sujetos del grupo intervención es Colombia 
+
+df <-
+  rename(df,
+         TABAQ = tabaquismo_ctrl,
+         SEXO = sexo_fem_as_num_ctrl
+  )
+
+df
+```
+
+### EXPLORACIÓN INICIAL DEL DATASET A EMPAREJAR
+
+```{r}
+summary(df)
+```
+
+```{r}
+## Análisis de frecuencia de missing values utilizando DataExplorer (aporta también otros tipos de información)
+DataExplorer::create_report(df)
+```
+
+-   Frecuencia de missing values
+
+![](report.png)
+
+Las variables TALLA, PESO, IMC y especialmente COLESTEROL tienen un alto porcentaje de missing values (8%, \>35%, \>35% y \>95% respectivamente)
+
+Se trabajará sobre 3 posibles conjuntos de datos según las variables disponibles (serán las variables basales de los sujetos del grupo control).
+
+-   Detección de outliers y visualización de distribuciones en las variables numéricas
+
+```{r}
+qqnorm(df$EDAD, main = "Normal Q-Q plot")
+table(df$EDAD)
+```
+
+```{r}
+df<-df[df$EDAD<=80, ] #Eliminamos sujetos de más de 80 años
+
+hist(df$EDAD, main = "Histogram")
+boxplot(df$EDAD, main = "Boxplot")
+```
+
+```{r}
+qqnorm(df$PAS, main = "Normal Q-Q plot")
+table(df$PAS)
+```
+
+```{r}
+df<-df[df$PAS<=300, ]  #Eliminamos sujetos con registros de PAS >300mmHg 
+
+hist(df$PAS, main = "Histogram")
+boxplot(df$PAS, main = "Boxplot")
+```
+
+```{r}
+qqnorm(df$IMC, main = "Normal Q-Q plot")
+table(df$IMC)
+```
+
+```{r}
+df<-df[(df$IMC >15 & df$IMC <=50) | is.na(df$IMC), ]  #Eliminamos sujetos con registros con IMC >50 (obesidad IV) o IMC<15
+
+hist(df$IMC, main = "Histogram")
+boxplot(df$IMC, main = "Boxplot")
+```
+
+```{r}
+qqnorm(df$COLESTEROL, main = "Normal Q-Q plot")
+table(df$COLESTEROL)
+```
+
+```{r}
+df<-df[(df$COLESTEROL>70 & df$COLESTEROL<=400) | is.na(df$COLESTEROL), ]
+
+hist(df$COLESTEROL, main = "Histogram")
+boxplot(df$COLESTEROL, main = "Boxplot")
+```
+
+### CREACIÓN DE TRES SUBCONJUNTOS PARA APLICAR EMPAREJAMIENTO
+
+```{r}
+#Todos los sujetos del conjunto unificado original
+df1<-df
+```
+
+```{r}
+#Se crea un subconjunto 2: sujetos del grupo control que tengan obligatoriamente cifra de IMC registrada (será la cifra de IMC basal)
+df2<-df[!is.na(df$IMC), ]   
+```
+
+```{r}
+#Se crea un subconjunto 3: con los sujetos que además tienen cifra de colesterol
+df3<-df2[!is.na(df2$COLESTEROL), ]  
+```
+
+# IMPLEMENTACIONES DE EMPAREJAMIENTO
+
+## SUBCONJUNTO 1
+
+No descarta ningún sujeto del conjunto de sujetos elegibles aunque no tengan registrado IMC o colesterol.
+
+-   Covariables incluidas en el algoritmo:
+
+    -   EDAD, SEXO, ACVA_K90_K91, ANGINA_K74, IAM_K75_K76, DM2_T90, TABAQ, PAS
+
+### Evaluación del equilibrio inicial
+
+```{r}
+#Definición del vector de variables por las cuales se empareja
+xvars1<-c("EDAD", "SEXO", "ACVA_K90_K91", "ANGINA_K74", "IAM_K75_K76", "DM2_T90", "TABAQ", "PAS")
+
+```
+
+```{r}
+#table 1: resumen estadístico de las variables en xvars
+#Estratificado por intervención para comparar y poder evaluar el equilibrio entre el grupo control e intervención (entre sus sujetos)
+
+table1_prematch1<- CreateTableOne(vars=xvars1,strata="INTERV", data=df1, test=FALSE)
+print(table1_prematch1,smd=TRUE) 
+
+```
+
+Se consideran como no aceptables las SMD\>0.1. Evidencian desequilibrio y pueden indicar la magnitud del fenómeno de confusión que podría darse si se procediese al analizar el efecto de la intervención.
+
+### Prueba 1.1
+
+SUBCONJUNTO 1 - DISTANCIA: MAHALANOBIS - MÉTODO: NN
+
+Parámetros:
+
+-   Ratio: 3:1
+
+-   Sin reemplazo
+
+```{r}
+m.out1.1 <- matchit(INTERV~EDAD+SEXO+ACVA_K90_K91+ANGINA_K74+IAM_K75_K76+DM2_T90+TABAQ+PAS,
+                    data = df1, 
+                    method = "nearest",
+                    distance = "mahalanobis",
+                    ratio = 3,
+                    replace=FALSE)
+
+m.out1.1
+summary(m.out1.1)
+```
+
+##### VISUALIZACIÓN DEL EQUILIBRIO ANTES Y DESPUÉS DEL EMPAREJAMIENTO
+
+```{r}
+#Visualización del equilibrio entre los grupos según sus covariables
+plot(summary(m.out1.1))
+plot(m.out1.1, type = "density", interactive = FALSE, which.xs = ~EDAD+SEXO+PAS) #Gráfico de densidad
+bal.plot(m.out1.1, var.name = "EDAD", which = "both",
+         type = "histogram",mirror = TRUE)
+
+```
+
+### Prueba 1.2
+
+SUBCONJUNTO 1 - DISTANCIA: MAHALANOBIS ROBUSTA- MÉTODO: NN
+
+Parámetros:
+
+-   Ratio: 3:1
+
+-   Sin reemplazo
+
+```{r}
+m.out1.2 <- matchit(INTERV~EDAD+SEXO+ACVA_K90_K91+ANGINA_K74+IAM_K75_K76+DM2_T90+TABAQ+PAS,
+                    data = df1, 
+                    method = "nearest",
+                    distance = "robust_mahalanobis",
+                    ratio = 3,
+                    replace=FALSE)
+
+m.out1.2
+summary(m.out1.2)
+```
+
+No se consigue una mejora significativa en comparación a la prueba 1.1 (distancia M no robusta).
+
+Aumenta el tiempo de ejecución.
+
+### Prueba 1.3
+
+SUBCONJUNTO 1 - DISTANCIA: MAHALANOBIS - MÉTODO: OPTIMAL
+
+Parámetros:
+
+-   Ratio: 3:1
+
+-   Aplicándose el método optimal el argumento de reemplazo es ignorado
+
+```{r eval=FALSE, include=FALSE}
+m.out1.3 <- matchit(INTERV~EDAD+SEXO+ACVA_K90_K91+ANGINA_K74+IAM_K75_K76+DM2_T90+TABAQ+PAS,
+                    data = df1, 
+                    method = "optimal",
+                    distance = "mahalanobis",
+                    ratio = 3)
+
+m.out1.3
+summary(m.out1.3)
+```
+
+No es posible la ejecución, no se dispone de memoria insuficiente.
+
+Debido al tamaño del dataset se produce un error: *Error: vector memory exhausted (limit reached?)*
+
+### Prueba 1.4
+
+SUBCONJUNTO 1 - DISTANCIA: Propensity Score (PSM) - MÉTODO: NN
+
+Parámetros:
+
+-   Ratio: 3:1
+
+-   Sin reemplazo
+
+```{r}
+m.out1.4 <- matchit(INTERV~EDAD+SEXO+ACVA_K90_K91+ANGINA_K74+IAM_K75_K76+DM2_T90+TABAQ+PAS,
+                    data = df1, 
+                    method = "nearest",
+                    ratio = 3,
+                    replace=FALSE)
+
+m.out1.4
+summary(m.out1.4)
+```
+
+##### VISUALIZACIÓN DE LA DISTRIBUCIÓN DE PUNTAJE DE PROPENSIÓN (PS)
+
+```{r}
+#Gráficos de PS 
+plot(m.out1.4,type = "jitter",interactive = FALSE)
+plot(m.out1.4,type = "hist")
+```
+
+Las distribuciones del puntaje de propensión tras el emparejamiento son más similares, sin embargo se obtienen peores resultados en cuanto al equilibrio de las covariables entre ambos grupos que utilizando distancia Mahalanobis (prueba 1.1).
+
+### Prueba 1.5
+
+SUBCONJUNTO 1 - DISTANCIA: MAHALANOBIS - MÉTODO: NN - EMPAREJAMIENTO EXACTO EN UNA COVARIABLE
+
+-   Emparejamiento exacto en la covariable PAIS_COLOMB
+
+Parámetros:
+
+-   Ratio: 3:1
+
+-   Sin reemplazo
+
+```{r}
+m.outMah1.5 <- matchit(INTERV~EDAD+SEXO+ACVA_K90_K91+ANGINA_K74+IAM_K75_K76+DM2_T90+TABAQ+PAS,
+                    data = df1, 
+                    method = "nearest",
+                    distance = "mahalanobis",
+                    ratio = 3,
+                    replace=FALSE,
+                    exact = ~PAIS_COLOMB)
+
+m.outMah1.5
+summary(m.outMah1.5)
+```
+
+El grupo emparejado resultante está más desequilibrado en variables como la edad y PAS, con valores de SMD \>0.3 y \>0.4 respectivamente, sin embargo consigue un grupo emparejado de sujetos con el mismo país de nacimiento.
+
+## SUBCONJUNTO 2
+
+Este subconjunto incluye a todos los sujetos del subconjunto 1 que tienen un registro de IMC, talla y peso, independientemente de si cuentan o no con un registro de colesterol.
+
+-   Covariables incluidas en el algoritmo:
+
+    -   EDAD, SEXO, ACVA_K90_K91, ANGINA_K74, IAM_K75_K76, DM2_T90, TABAQ, PAS e IMC
+
+        (se incluye la variable IMC en el vector de covariables)
+
+### Prueba 2.1
+
+SUBCONJUNTO 2 - DISTANCIA: MAHALANOBIS - MÉTODO: NN
+
+Parámetros:
+
+-   Ratio: 3:1
+
+-   Sin reemplazo
+
+```{r}
+m.out2.1 <- matchit(INTERV~EDAD+SEXO+ACVA_K90_K91+ANGINA_K74+IAM_K75_K76+DM2_T90+TABAQ+PAS+IMC,
+                    data = df2, 
+                    method = "nearest",
+                    distance = "mahalanobis",
+                    ratio = 3,
+                    replace=FALSE)
+
+m.out2.1
+summary(m.out2.1)
+```
+
+Comprobamos que se obtienen muy buenos resultados en términos de equilibrio en las covariables pero como es esperable, no tan buenos como para el subconjunto 1.
+
+Esto es debido a que en el subconjunto 1 el algoritmo buca parejas para 350 sujetos del grupo de intervención en el grupo completo de sujetos elegibles del grupo control (107968 sujetos) con respecto a 8 variables (6 de ellas binarias). Con estas condiciones se maximizarse el equilibrio logrado entre las variables de ambos grupos, ya que al ser el conjunto de sujetos elegibles mucho mayor es más probable que se encuentren parejas exactas o muy similares.
+
+### Prueba 2.2
+
+SUBCONJUNTO 2 - DISTANCIA: MAHALANOBIS ROBUSTA- MÉTODO: NN
+
+Parámetros:
+
+-   Ratio: 3:1
+
+-   Sin reemplazo
+
+```{r}
+m.out2.2 <- matchit(INTERV~EDAD+SEXO+ACVA_K90_K91+ANGINA_K74+IAM_K75_K76+DM2_T90+TABAQ+PAS+IMC,
+                    data = df2, 
+                    method = "nearest",
+                    distance = "robust_mahalanobis",
+                    ratio = 3,
+                    replace=FALSE)
+
+m.out2.2
+summary(m.out2.2)
+```
+
+Mejora el equilibrio en la variable edad pero no significativamente y empeora el equilibrio en las variables PAS e IMC. De nuevo no se consigue una mejora significativa en comparación a la prueba 2.1 (distancia M no robusta ) y aumenta el tiempo de ejecución.
+
+### Prueba 2.3
+
+SUBCONJUNTO 2 - DISTANCIA: MAHALANOBIS - MÉTODO: OPTIMAL
+
+Parámetros:
+
+-   Ratio: 3:1
+
+-   Aplicándose el método optimal el argumento de reemplazo es ignorado
+
+```{r eval=FALSE, include=FALSE}
+m.out2.3 <- matchit(INTERV~EDAD+SEXO+ACVA_K90_K91+ANGINA_K74+IAM_K75_K76+DM2_T90+TABAQ+PAS+IMC,
+                    data = df2, 
+                    method = "optimal",
+                    distance = "mahalanobis",
+                    ratio = 3)
+
+m.out2.3
+summary(m.out2.3)
+```
+
+No es posible la ejecución, no se dispone de memoria insuficiente.
+
+Debido al tamaño del dataset se produce un error: *Error: vector memory exhausted (limit reached?)*
+
+### Prueba 2.4
+
+SUBCONJUNTO 2 - DISTANCIA: Propensity Score (PSM) - MÉTODO: NN
+
+Parámetros:
+
+-   Ratio: 3:1
+
+-   Sin reemplazo
+
+```{r}
+m.out2.4 <- matchit(INTERV~EDAD+SEXO+ACVA_K90_K91+ANGINA_K74+IAM_K75_K76+DM2_T90+TABAQ+PAS+IMC,
+                    data = df2, 
+                    method = "nearest",
+                    ratio = 3,
+                    replace=FALSE)
+
+m.out2.4
+summary(m.out2.4)
+```
+
+##### VISUALIZACIÓN DE LA DISTRIBUCIÓN DE PUNTAJE DE PROPENSIÓN (PS)
+
+```{r}
+#Gráficos de PS 
+plot(m.out2.4,type = "jitter",interactive = FALSE)
+plot(m.out2.4,type = "hist")
+```
+
+Las distribuciones del puntaje de propensión tras el emparejamiento son más similares, pero de nuevo se obtienen peores resultados en cuanto al equilibrio de las covariables entre ambos grupos que utilizando distancia Mahalanobis (prueba 2.1).
+
+### Prueba 2.5
+
+SUBCONJUNTO 2 - DISTANCIA: MAHALANOBIS - MÉTODO: NN - EMPAREJAMIENTO EXACTO EN UNA COVARIABLE
+
+-   Emparejamiento exacto en la covariable PAIS_COLOMB
+
+Parámetros:
+
+-   Ratio: 3:1
+
+-   Sin reemplazo
+
+```{r}
+m.outMah2.5 <- matchit(INTERV~EDAD+SEXO+ACVA_K90_K91+ANGINA_K74+IAM_K75_K76+DM2_T90+TABAQ+PAS+IMC,
+                    data = df2, 
+                    method = "nearest",
+                    distance = "mahalanobis",
+                    ratio = 3,
+                    replace=FALSE,
+                    exact = ~PAIS_COLOMB)
+
+m.outMah2.5
+summary(m.outMah2.5)
+```
+
+El grupo emparejado resultante está más desequilibrado en variables como la edad, PAS e IMC, con valores de SMD \>0.3.
+
+Puede observarse que en este caso, al especificar el emparejameinto exacto por una variable y al haber reducido el conjunto de sujetos elegibles (imponiendo la condición de que los sujetos deben contar con al menos un registro de IMC), no consiguen emparejarse todos los sujetos del grupo intervención a tres sujetos del grupo intervención. Así, el dataset resultante está formado por 626 sujetos del grupo control y 343 del grupo intervención, siendo el tamaño total 969, un conjunto de menor tamaño que los conseguidos anteriormente, pero de nuevo formado por sujetos que comparten el mismo país de nacimiento.
+
+## SUBCONJUNTO 3
+
+Incluye solo a los sujetos que no tienen valores nulos en ninguna de sus variables (incluida la variable de colesterol).
+
+-   Covariables incluidas en el algoritmo:
+
+    -   EDAD, SEXO, ACVA_K90_K91, ANGINA_K74, IAM_K75_K76, DM2_T90, TABAQ, PAS, IMC y COLESTEROL
+
+### Prueba 3.1
+
+SUBCONJUNTO 3 - DISTANCIA: MAHALANOBIS - MÉTODO: NN
+
+Parámetros:
+
+-   Ratio: 3:1
+
+-   Sin reemplazo
+
+```{r}
+m.out3.1 <- matchit(INTERV~EDAD+SEXO+ACVA_K90_K91+ANGINA_K74+IAM_K75_K76+DM2_T90+TABAQ+PAS+IMC+COLESTEROL,
+                    data = df3, 
+                    method = "nearest",
+                    distance = "mahalanobis",
+                    ratio = 3,
+                    replace=FALSE)
+
+m.out3.1
+summary(m.out3.1)
+```
+
+### Prueba 3.2
+
+SUBCONJUNTO 3 - DISTANCIA: MAHALANOBIS ROBUSTA- MÉTODO: NN
+
+Parámetros:
+
+-   Ratio: 3:1
+
+-   Sin reemplazo
+
+```{r}
+m.out3.2 <- matchit(INTERV~EDAD+SEXO+ACVA_K90_K91+ANGINA_K74+IAM_K75_K76+DM2_T90+TABAQ+PAS+IMC+COLESTEROL,
+                    data = df3, 
+                    method = "nearest",
+                    distance = "robust_mahalanobis",
+                    ratio = 3,
+                    replace=FALSE)
+
+m.out3.2
+summary(m.out3.2)
+```
+
+### Prueba 3.3
+
+SUBCONJUNTO 3 - DISTANCIA: MAHALANOBIS - MÉTODO: OPTIMAL
+
+Parámetros:
+
+-   Ratio: 3:1
+
+-   Aplicándose el método optimal el argumento de reemplazo es ignorado
+
+```{r eval=FALSE, include=FALSE}
+m.out3.3 <- matchit(INTERV~EDAD+SEXO+ACVA_K90_K91+ANGINA_K74+IAM_K75_K76+DM2_T90+TABAQ+PAS+IMC+COLESTEROL,
+                    data = df3, 
+                    method = "optimal",
+                    distance = "mahalanobis",
+                    ratio = 3)
+
+m.out3.3
+summary(m.out3.3)
+```
+
+No es posible la ejecución, no se dispone de memoria insuficiente para el tamaño del dataset introducido.
+
+### Prueba 3.4
+
+SUBCONJUNTO 3 - DISTANCIA: Propensity Score (PSM) - MÉTODO: NN
+
+Parámetros:
+
+-   Ratio: 3:1
+
+-   Sin reemplazo
+
+```{r}
+m.out3.4 <- matchit(INTERV~EDAD+SEXO+ACVA_K90_K91+ANGINA_K74+IAM_K75_K76+DM2_T90+TABAQ+PAS+IMC+COLESTEROL,
+                    data = df3, 
+                    method = "nearest",
+                    ratio = 3,
+                    replace=FALSE)
+
+m.out3.4
+summary(m.out3.4)
+```
+
+### Prueba 3.5
+
+SUBCONJUNTO 3 - DISTANCIA: MAHALANOBIS - MÉTODO: NN - EMPAREJAMIENTO EXACTO EN UNA COVARIABLE
+
+-   Emparejamiento exacto en la covariable PAIS_COLOMB
+
+Parámetros:
+
+-   Ratio: 3:1
+
+-   Sin reemplazo
+
+```{r}
+m.outMah3.5 <- matchit(INTERV~EDAD+SEXO+ACVA_K90_K91+ANGINA_K74+IAM_K75_K76+DM2_T90+TABAQ+PAS+IMC+COLESTEROL,
+                    data = df3, 
+                    method = "nearest",
+                    distance = "mahalanobis",
+                    ratio = 3,
+                    replace=FALSE,
+                    exact = ~PAIS_COLOMB)
+
+m.outMah3.5
+summary(m.outMah3.5)
+```
+
+En este caso, solo consiguen emparejarse 18 sujetos de cada grupo, ya que quedan sin emparejarse la mayoría de los sujetos de ambos grupos y se obtiene como resultado final, un conjunto de datos de 36 suejtos sobre el cual no podría realizarse un análisis del efecto de la intervención. Este emparejamiento por lo tanto, no se consideraría válido.
+
+# ANEXOS
+
+### Exportación del conjunto final emparejado
+
+```{r eval=FALSE, include=FALSE}
+#Exportación del conjunto final emparejado
+m.data1 <- match.data(m.outMah, data = df,
+                      distance = "mahalanobis")
+write_xlsx(m.data1,"~/Desktop/TFG/TFG-R dir/conjunto_emparejado_1.xlsx", col_names = TRUE, format_headers = TRUE)
+
+```
+
+### Exportación de la tabla 1
+
+```{r eval=FALSE, include=FALSE}
+# Exportación de la Tabla 1 
+tab1Mat_prematch <- print(table1_prematch, quote = FALSE, noSpaces = TRUE,smd=TRUE)
+## Fichero csv
+write.csv(tab1Mat_prematch, file = "table1_prematch.csv")
+table1_prematch_df <- read_csv("table1_prematch.csv")
+table1_prematch_df
+#Fichero Excel
+library("writexl")
+write_xlsx(table1_prematch_df,"~/Desktop/TFG/TFG-R dir/tableones-Matching.xlsx", col_names = TRUE, format_headers = TRUE)
+```
+
+### Propensity Score Matching
+
+#### Ajustar un modelo de Propensity Score
+
+Utilizando las funciones de MatchIt no es necesario implementar explícitamente un modelo de PS (MatchIt estima el PS y empareja directamente), pero realizar estos pasos permite estudiar mejor las características del conjunto de datos y especificar parámetros del modelo de estimación del PS.
+
+```{r eval=FALSE, include=FALSE}
+#glm (Generalized Linear Models)
+
+#ajustar un modelo de PS (regresión logística)
+psmodel<-glm(INTERV~EDAD+SEXO+ACVA_K90_K91+ANGINA_K74+IAM_K75_K76+DM2_T90+TABAQ+PAS, #'INTERV' sería el outcome para la regresión logística, el resto las variables que se quieren controlar
+             family=binomial(), #el 'outcome' es binario, por defecto se utiliza logit link (escala)
+             data=df) 
+summary(psmodel)
+
+#da una idea de qué variables son predictivas de recibir el tratamiento (intervención)
+#podría ser interesante para ver quien sería más propenso a recibir la intervención (pertenecer al grupo intervención), qué tienen en común esos sujetos (los valores de sus variables)
+
+```
+
+#### Comprobar el solapamiento del puntaje de propensión antes del emparejamiento
+
+```{r eval=FALSE, include=FALSE}
+pscore<-psmodel$fitted.values
+
+h1 = hist(pscore[df$INTERV==1], plot=FALSE,breaks=20)
+h2 = hist(pscore[df$INTERV==0], plot=FALSE,breaks=20)
+h2$counts = - h2$counts
+hmax = max(h1$counts)
+hmin = min(h2$counts)
+X = c(h1$breaks, h2$breaks)
+xmax = max(X)
+xmin = min(X)
+plot(h1, ylim=c(hmin, hmax), col="Red", xlim=c(xmin, xmax),
+     xlab='propensity score',main="",yaxt='n',ylab='')
+lines(h2, col="blue")
+```
+
+El tamaño del grupo control es tan grande en comparación con el tamaño del grupo intervención que es difícil de visualizar el solapamiento.
+
+#### Emparejaeminto por puntaje de propensión utilizando los puntajes estimados y la librería 'Matching'
+
+```{r eval=FALSE, include=FALSE}
+logit <- function(p) {log(p)-log(1-p)}
+
+psmatch<-Match(Tr=df$INTERV,M=1,X=logit(pscore),replace=FALSE,
+               caliper=.2) 
+
+matched<-df[unlist(psmatch[c("index.treated","index.control")]), ] 
+
+table1_matched<-CreateTableOne(vars=xvars, strata ="INTERV", 
+                               data=matched, test = FALSE)
+
+print(table1_prematch1, smd = TRUE)
+print(table1_matched, smd = TRUE)
+```
+
+```{r eval=FALSE, include=FALSE}
+#Comprobar el solapamiento del puntaje de propensión tras el emparejamiento 
+h1 = hist(pscore[matched$INTERV==1], plot=FALSE,breaks=20)
+h2 = hist(pscore[matched$INTERV==0], plot=FALSE,breaks=20)
+h2$counts = - h2$counts
+hmax = max(h1$counts)
+hmin = min(h2$counts)
+X = c(h1$breaks, h2$breaks)
+xmax = max(X)
+xmin = min(X)
+plot(h1, ylim=c(hmin, hmax), col="Red", xlim=c(xmin, xmax),
+     xlab='propensity score',main="",yaxt='n',ylab='')
+lines(h2, col="blue")
+```
